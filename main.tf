@@ -95,10 +95,27 @@ data "azurerm_kubernetes_service_versions" "current" {
   version_prefix = var.kube_version_prefix
 }
 
+resource "azurerm_user_assigned_identity" "example" {
+  name                = "aks-example-identity"
+  resource_group_name = var.kube_resource_group_name
+  location            = var.location
+}
+
+resource "azurerm_role_assignment" "netcontributor" {
+  role_definition_name = "Network Contributor"
+  scope                = module.routetable.route_table_id
+  principal_id         = azurerm_user_assigned_identity.example.principal_id
+}
+
+resource "azurerm_role_assignment" "routecontributor" {
+  role_definition_name = "Network Contributor"
+  scope                = module.kube_network.subnet_ids["aks-subnet"]
+  principal_id         = azurerm_user_assigned_identity.example.principal_id
+}
+
 resource "azurerm_kubernetes_cluster" "privateaks" {
   name                    = "private-aks"
   location                = var.location
-  kubernetes_version      = data.azurerm_kubernetes_service_versions.current.latest_version
   resource_group_name     = azurerm_resource_group.kube.name
   azure_policy_enabled    = true
   dns_prefix              = "private-aks"
@@ -112,24 +129,22 @@ resource "azurerm_kubernetes_cluster" "privateaks" {
   }
 
   identity {
-    type = "SystemAssigned"
+    type = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.example.id]
   }
 
   network_profile {
     docker_bridge_cidr = var.network_docker_bridge_cidr
     dns_service_ip     = var.network_dns_service_ip
-    network_plugin     = "azure"
-    outbound_type      = "userDefinedRouting"
+    network_plugin     = "kubenet"
     service_cidr       = var.network_service_cidr
   }
 
-  depends_on = [module.routetable]
-}
-
-resource "azurerm_role_assignment" "netcontributor" {
-  role_definition_name = "Network Contributor"
-  scope                = module.kube_network.subnet_ids["aks-subnet"]
-  principal_id         = azurerm_kubernetes_cluster.privateaks.identity[0].principal_id
+  depends_on = [
+    module.routetable,
+    azurerm_role_assignment.netcontributor,
+    azurerm_role_assignment.routecontributor
+  ]
 }
 
 module "jumpbox" {
